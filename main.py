@@ -4,7 +4,7 @@ from scipy.optimize import fsolve
 from sklearn.datasets import fetch_openml
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
-thesoly
+
 
 def extract_leading_eigenpairs(X, m):
     cov_matrix = np.dot(X.T, X)
