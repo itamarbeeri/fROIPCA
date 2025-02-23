@@ -1,3 +1,5 @@
+import argparse
+
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import fsolve
@@ -17,7 +19,7 @@ def extract_leading_eigenpairs(X, m):
     return top_eigenvalues, top_eigenvectors
 
 
-def load_dataset():
+def load_dataset(seed=42):
     # Load the MNIST dataset
     mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
     X = mnist.data
@@ -26,9 +28,7 @@ def load_dataset():
     scaler = StandardScaler()
     X_norm = scaler.fit_transform(X)
 
-    X_shuffled, y_shuffled = shuffle(X_norm, y, random_state=42)
-
-    print("Dataset loaded, standardized, and shuffled.")
+    X_shuffled, y_shuffled = shuffle(X_norm, y, random_state=seed)
     return X_shuffled, y_shuffled
 
 
@@ -49,7 +49,9 @@ def filter_components(estimate_vals, estimate_vecs, inital_vals):
     filtered_evals = estimate_vals[mask]
     filtered_evecs = estimate_vecs[:, mask]  # Keep corresponding eigenvectors
 
-    print(f'detected {len(filtered_evals)}/{len(estimate_vals)} legal eigenvalues')
+    if len(filtered_evals) < len(estimate_vals):
+        print(f'detected {len(filtered_evals)}/{len(estimate_vals)} legal eigenvalues')
+
     return filtered_evals, filtered_evecs
 
 
@@ -75,6 +77,7 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
     m = len(eigen_vals)
     B = np.trace(np.dot(X.T, X))
 
+    u_history = list()
     for i in range(N):
         Q = np.array(eigen_vecs)
         x = next(generator)
@@ -82,12 +85,13 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
 
         rho = np.dot(x, x)
         v = x / np.sqrt(rho)
-        z = np.dot(Q.T, x)
+        z = np.dot(Q.T, v)
 
         if not const_u:
             u = (B - np.sum(eigen_vals)) / (d - m)
             B += rho
 
+        u_history.append(u)
         roots = fsolve(truncated_secular_equation, eigen_vals, xtol=1e-6)
 
         real_roots = np.real(roots[np.isreal(roots)])  # Keep only real roots
@@ -106,19 +110,20 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
         eigen_vals = estimate_vals
         eigen_vecs = estimate_vecs
 
-    return eigen_vals, eigen_vecs
+    return eigen_vals, eigen_vecs, u_history
 
 
-def run_fROIPCA(init_size=5000, N_updates=2000, m=10, const_u=False, debug=False):
-    x_data, y_data = load_dataset()
+def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, debug=False):
+    x_data, y_data = load_dataset(seed)
     generator = sample_generator(x_data)
     init_dataset = np.array([next(generator) for _ in range(init_size)])
 
     top_eigenvalues, top_eigenvectors = extract_leading_eigenpairs(init_dataset, m)
-    estimate_vals, estimate_vecs = fROIPCA(X=init_dataset, eigen_vals=top_eigenvalues, eigen_vecs=top_eigenvectors,
-                                           N=N_updates,
-                                           generator=generator, u=0,
-                                           const_u=const_u)
+    estimate_vals, estimate_vecs, u_history = fROIPCA(X=init_dataset, eigen_vals=top_eigenvalues,
+                                                      eigen_vecs=top_eigenvectors,
+                                                      N=N_updates,
+                                                      generator=generator, u=0,
+                                                      const_u=const_u)
 
     true_eigenvalues, true_eigenvectors = extract_leading_eigenpairs(x_data[:init_size + N_updates], m)
     filtered_evals, filtered_evecs = filter_components(estimate_vals, estimate_vecs, true_eigenvalues)
@@ -135,21 +140,36 @@ def run_fROIPCA(init_size=5000, N_updates=2000, m=10, const_u=False, debug=False
         plt.legend()  # Add legend to the plot
         plt.show()
 
+        plt.figure()
+        plt.title('u history')
+        plt.plot(u_history)
+        plt.show()
+
     return error
 
 
-def run_multiple_experiments(n_exp=20):
-    error_u0 = list()
-    for i in range(n_exp):
-        error_u0.append(run_fROIPCA(const_u=True))
-
-    error_u_mean = list()
-    for i in range(n_exp):
-        error_u_mean.append(run_fROIPCA(const_u=False))
-
-    print(f'mean error for u=0 is: {np.mean(error_u0)}')
-    print(f'mean error for u_mean is: {np.mean(error_u_mean)}')
-
+def menu():
+    parser = argparse.ArgumentParser(description="parser")
+    parser.add_argument("-ne", "--n_exp", type=int, default=20, help="number of experiments")
+    parser.add_argument("-s", "--init_size", type=int, default=5000, help="initial dataset size")
+    parser.add_argument("-nu", "--N_updates", type=int, default=2000, help="number of update samples")
+    parser.add_argument("-m", "--PC_num", type=int, default=10, help="number of principal components")
+    parser.add_argument("-r", "--seed", type=int, default=42, help="random seed")
+    parser.add_argument("-u", "--const_u", action="store_true", help="use constant U or dynamic U")
+    parser.add_argument("-d", "--debug", action="store_true", help="debug flag")
+    return parser.parse_args()
 
 if __name__ == '__main__':
-    run_multiple_experiments()
+    args = menu()
+    error_list = list()
+    for i in range(args.n_exp):
+        print(f'iteration: {i}/{args.n_exp}')
+        error_list.append(run_fROIPCA(init_size=args.init_size,
+                                      N_updates=args.N_updates,
+                                      m=args.PC_num,
+                                      seed=args.seed,
+                                      const_u=args.const_u,
+                                      debug=args.debug))
+
+    print(f'error mean: {np.mean(error_list)}, error std: {np.std(error_list)}')
+    print('done')
