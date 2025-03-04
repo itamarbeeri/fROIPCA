@@ -67,7 +67,7 @@ def frobenius_error(true_eigenpairs, approx_eigenpairs, m):
 
 def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
     def truncated_secular_equation(t):
-        eps = 0.01
+        eps = 0
         w = 1 + rho * (1 - np.dot(z.T, z)) / (u - t + eps)
         for zk, val_k in zip(z, eigen_vals):
             w += rho * (zk ** 2 / (val_k - t + eps))
@@ -167,7 +167,7 @@ if __name__ == '__main__':
         error_list.append(run_fROIPCA(init_size=args.init_size,
                                       N_updates=args.N_updates,
                                       m=args.PC_num,
-                                      seed=args.seed,
+                                      seed=i,
                                       const_u=args.const_u,
                                       debug=args.debug))
 
