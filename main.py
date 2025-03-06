@@ -2,10 +2,11 @@ import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.optimize import fsolve
 from sklearn.datasets import fetch_openml
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
+
+from roots_estimation import brentq_fixed_roots, fsolve_roots
 
 
 def extract_leading_eigenpairs(X, m):
@@ -65,13 +66,7 @@ def frobenius_error(true_eigenpairs, approx_eigenpairs, m):
     return (np.linalg.norm(A_m - A_m_approx, 'fro') ** 2) / (np.linalg.norm(A_m, 'fro') ** 2)
 
 
-def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
-    def truncated_secular_equation(t):
-        eps = 0
-        w = 1 + rho * (1 - np.dot(z.T, z)) / (u - t + eps)
-        for zk, val_k in zip(z, eigen_vals):
-            w += rho * (zk ** 2 / (val_k - t + eps))
-        return w
+def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, mu=0, const_mu=False, qr_every = 0):
 
     d = X.shape[1]
     m = len(eigen_vals)
@@ -87,12 +82,15 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
         v = x / np.sqrt(rho)
         z = np.dot(Q.T, v)
 
-        if not const_u:
-            u = (B - np.sum(eigen_vals)) / (d - m)
+        if not const_mu:
+            mu = (B - np.sum(eigen_vals)) / (d - m)
             B += rho
 
-        u_history.append(u)
-        roots = fsolve(truncated_secular_equation, eigen_vals, xtol=1e-6)
+        u_history.append(mu)
+        eigen_vals_init_guess = eigen_vals + np.random.uniform(-0.01, 0.01, size=m)            # Initial guess for the solver
+        roots = fsolve_roots(rho, z, mu, eigen_vals_init_guess)
+
+        # roots = find_fixed_roots(rho, z, mu, eigen_vals_init_guess, search_margin=0.01)
 
         real_roots = np.real(roots[np.isreal(roots)])  # Keep only real roots
         real_roots.sort()  # Sort in ascending order
@@ -101,7 +99,7 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
         estimate_vecs = list()
         term1 = np.sum([np.dot(vec.T, v) * vec for vec in eigen_vecs.T])
         for vec, val, est_val in zip(eigen_vecs.T, eigen_vals, estimate_vals):
-            term2 = (1 / np.dot(vec.T, v) ** 2) * (val - est_val) / (u - est_val)
+            term2 = (1 / np.dot(vec.T, v) ** 2) * (val - est_val) / (mu - est_val)
             term3 = np.dot(vec.T, v) * v - np.dot(vec.T, v) * term1
             estimate_vecs.append(vec + term2 * term3)
 
@@ -110,10 +108,20 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, u=0, const_u=False):
         eigen_vals = estimate_vals
         eigen_vecs = estimate_vecs
 
+
+        # added orthonormalization and normalization on the real vectors according to the MATLAB implementation
+        if qr_every > 0:
+            if i % qr_every == 0:
+                orth_vecs, _ = np.linalg.qr(eigen_vecs)
+                eigen_vecs = orth_vecs
+            else:
+                norm_vecs = np.real(eigen_vecs) / np.linalg.norm(eigen_vecs, axis=0)[np.newaxis, :]
+                eigen_vecs = norm_vecs
+
     return eigen_vals, eigen_vecs, u_history
 
 
-def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, debug=False):
+def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, qr_every=0, debug=True):
     x_data, y_data = load_dataset(seed)
     generator = sample_generator(x_data)
     init_dataset = np.array([next(generator) for _ in range(init_size)])
@@ -122,11 +130,14 @@ def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, de
     estimate_vals, estimate_vecs, u_history = fROIPCA(X=init_dataset, eigen_vals=top_eigenvalues,
                                                       eigen_vecs=top_eigenvectors,
                                                       N=N_updates,
-                                                      generator=generator, u=0,
-                                                      const_u=const_u)
+                                                      generator=generator,
+                                                      mu=0,
+                                                      const_mu=const_u,
+                                                      qr_every=100)
 
     true_eigenvalues, true_eigenvectors = extract_leading_eigenpairs(x_data[:init_size + N_updates], m)
-    filtered_evals, filtered_evecs = filter_components(estimate_vals, estimate_vecs, true_eigenvalues)
+    # filtered_evals, filtered_evecs = filter_components(estimate_vals, estimate_vecs, true_eigenvalues)
+    filtered_evals, filtered_evecs = estimate_vals, estimate_vecs
     error = frobenius_error((true_eigenvalues, true_eigenvectors), (filtered_evals, filtered_evecs),
                             m=len(filtered_evals))
 
@@ -152,11 +163,13 @@ def menu():
     parser = argparse.ArgumentParser(description="parser")
     parser.add_argument("-ne", "--n_exp", type=int, default=20, help="number of experiments")
     parser.add_argument("-s", "--init_size", type=int, default=5000, help="initial dataset size")
-    parser.add_argument("-nu", "--N_updates", type=int, default=2000, help="number of update samples")
+    parser.add_argument("-nu", "--N_updates", type=int, default=2000
+                        , help="number of update samples")
     parser.add_argument("-m", "--PC_num", type=int, default=10, help="number of principal components")
     parser.add_argument("-r", "--seed", type=int, default=42, help="random seed")
     parser.add_argument("-u", "--const_u", action="store_true", help="use constant U or dynamic U")
     parser.add_argument("-d", "--debug", action="store_true", help="debug flag")
+    parser.add_argument("-qr", "--qr_every", type=int, default=100, help="Perform QR orthogonalisation every")
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -169,7 +182,9 @@ if __name__ == '__main__':
                                       m=args.PC_num,
                                       seed=i,
                                       const_u=args.const_u,
-                                      debug=args.debug))
+                                      qr_every=784,
+                                      debug=args.debug
+                                      ))
 
     print(f'error mean: {np.mean(error_list)}, error std: {np.std(error_list)}')
     print('done')
