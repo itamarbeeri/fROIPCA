@@ -144,18 +144,16 @@ def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, qr
 
     mean_update_time = np.mean(update_times)
     true_eigenvalues, true_eigenvectors = extract_leading_eigenpairs(x_data[:init_size + N_updates], m)
-    # filtered_evals, filtered_evecs = filter_components(estimate_vals, estimate_vecs, true_eigenvalues)
-    filtered_evals, filtered_evecs = estimate_vals, estimate_vecs
-    error = frobenius_error((true_eigenvalues, true_eigenvectors), (filtered_evals, filtered_evecs),
-                            m=len(filtered_evals))
+    error = frobenius_error((true_eigenvalues, true_eigenvectors), (estimate_vals, estimate_vecs),
+                            m=len(estimate_vals))
 
     if debug:
         true_eigenvalues.sort()
 
         plt.figure()
         plt.title(f'Eigenvalues - error {error}')
-        plt.plot(true_eigenvalues[:len(filtered_evals)], label='True Eigenvalues')
-        plt.plot(filtered_evals, label='Filtered Eigenvalues')
+        plt.plot(true_eigenvalues[:len(estimate_vals)], label='True Eigenvalues')
+        plt.plot(estimate_vals, label='Filtered Eigenvalues')
         plt.legend()  # Add legend to the plot
         plt.show()
 
@@ -180,9 +178,8 @@ def menu():
     parser.add_argument("-qr", "--qr_every", type=int, default=0, help="Perform QR orthogonalisation every")
     parser.add_argument("-opt", "--optimizer", type=str, default="fsolve", help="optimizer type")
     parser.add_argument("-ds", "--dataset_name", type=str, default="mnist_784", help="mnist_784, superconduct, poker-hand")
-
-
     return parser.parse_args()
+
 
 if __name__ == '__main__':
     args = menu()
