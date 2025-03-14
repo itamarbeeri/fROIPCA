@@ -1,4 +1,5 @@
 import argparse
+from time import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -6,7 +7,7 @@ from sklearn.datasets import fetch_openml
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
 
-from roots_estimation import brentq_fixed_roots, fsolve_roots
+from roots_estimation import fsolve_roots, brentq_fixed_roots
 
 
 def extract_leading_eigenpairs(X, m):
@@ -20,9 +21,9 @@ def extract_leading_eigenpairs(X, m):
     return top_eigenvalues, top_eigenvectors
 
 
-def load_dataset(seed=42):
+def load_dataset(dataset_name='mnist_784', seed=42):
     # Load the MNIST dataset
-    mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
+    mnist = fetch_openml(dataset_name, version=1, as_frame=False, parser="liac-arff")
     X = mnist.data
     y = mnist.target.astype(int)
 
@@ -66,14 +67,17 @@ def frobenius_error(true_eigenpairs, approx_eigenpairs, m):
     return (np.linalg.norm(A_m - A_m_approx, 'fro') ** 2) / (np.linalg.norm(A_m, 'fro') ** 2)
 
 
-def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, mu=0, const_mu=False, qr_every = 0):
+def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, mu=0, const_mu=False, qr_every=0, optimizer='fsolve'):
 
     d = X.shape[1]
     m = len(eigen_vals)
     B = np.trace(np.dot(X.T, X))
 
     u_history = list()
+    update_times = list()
     for i in range(N):
+        t0 = time()
+
         Q = np.array(eigen_vecs)
         x = next(generator)
         x[np.abs(x) < 1e-12] = 0
@@ -88,9 +92,10 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, mu=0, const_mu=False, qr_ev
 
         u_history.append(mu)
         eigen_vals_init_guess = eigen_vals + np.random.uniform(-0.01, 0.01, size=m)            # Initial guess for the solver
-        roots = fsolve_roots(rho, z, mu, eigen_vals_init_guess)
-
-        # roots = find_fixed_roots(rho, z, mu, eigen_vals_init_guess, search_margin=0.01)
+        if optimizer == 'fsolve':
+            roots = fsolve_roots(rho, z, mu, eigen_vals_init_guess)
+        else:
+            roots = brentq_fixed_roots(rho, z, mu, eigen_vals_init_guess, search_margin=0.01)
 
         real_roots = np.real(roots[np.isreal(roots)])  # Keep only real roots
         real_roots.sort()  # Sort in ascending order
@@ -118,23 +123,26 @@ def fROIPCA(X, eigen_vals, eigen_vecs, N, generator, mu=0, const_mu=False, qr_ev
                 norm_vecs = np.real(eigen_vecs) / np.linalg.norm(eigen_vecs, axis=0)[np.newaxis, :]
                 eigen_vecs = norm_vecs
 
-    return eigen_vals, eigen_vecs, u_history
+        update_times.append(time() - t0)
+    return eigen_vals, eigen_vecs, u_history, update_times
 
 
-def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, qr_every=0, debug=True):
-    x_data, y_data = load_dataset(seed)
+def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, qr_every=0, optimizer='fsolve', dataset_name='mnist_784', debug=True):
+    x_data, y_data = load_dataset(dataset_name, seed)
     generator = sample_generator(x_data)
     init_dataset = np.array([next(generator) for _ in range(init_size)])
 
     top_eigenvalues, top_eigenvectors = extract_leading_eigenpairs(init_dataset, m)
-    estimate_vals, estimate_vecs, u_history = fROIPCA(X=init_dataset, eigen_vals=top_eigenvalues,
-                                                      eigen_vecs=top_eigenvectors,
-                                                      N=N_updates,
-                                                      generator=generator,
-                                                      mu=0,
-                                                      const_mu=const_u,
-                                                      qr_every=100)
+    estimate_vals, estimate_vecs, u_history, update_times = fROIPCA(X=init_dataset, eigen_vals=top_eigenvalues,
+                                                                    eigen_vecs=top_eigenvectors,
+                                                                    N=N_updates,
+                                                                    generator=generator,
+                                                                    mu=0,
+                                                                    const_mu=const_u,
+                                                                    qr_every=qr_every,
+                                                                    optimizer=optimizer)
 
+    mean_update_time = np.mean(update_times)
     true_eigenvalues, true_eigenvectors = extract_leading_eigenpairs(x_data[:init_size + N_updates], m)
     # filtered_evals, filtered_evecs = filter_components(estimate_vals, estimate_vecs, true_eigenvalues)
     filtered_evals, filtered_evecs = estimate_vals, estimate_vecs
@@ -156,7 +164,7 @@ def run_fROIPCA(init_size=5000, N_updates=2000, m=10, seed=42, const_u=False, qr
         plt.plot(u_history)
         plt.show()
 
-    return error
+    return error, mean_update_time
 
 
 def menu():
@@ -169,22 +177,32 @@ def menu():
     parser.add_argument("-r", "--seed", type=int, default=42, help="random seed")
     parser.add_argument("-u", "--const_u", action="store_true", help="use constant U or dynamic U")
     parser.add_argument("-d", "--debug", action="store_true", help="debug flag")
-    parser.add_argument("-qr", "--qr_every", type=int, default=100, help="Perform QR orthogonalisation every")
+    parser.add_argument("-qr", "--qr_every", type=int, default=0, help="Perform QR orthogonalisation every")
+    parser.add_argument("-opt", "--optimizer", type=str, default="fsolve", help="optimizer type")
+    parser.add_argument("-ds", "--dataset_name", type=str, default="mnist_784", help="mnist_784, superconduct, poker-hand")
+
+
     return parser.parse_args()
 
 if __name__ == '__main__':
     args = menu()
-    error_list = list()
+    error_list, mean_update_times = list(), list()
     for i in range(args.n_exp):
         print(f'iteration: {i}/{args.n_exp}')
-        error_list.append(run_fROIPCA(init_size=args.init_size,
-                                      N_updates=args.N_updates,
-                                      m=args.PC_num,
-                                      seed=i,
-                                      const_u=args.const_u,
-                                      qr_every=784,
-                                      debug=args.debug
-                                      ))
+        error, mean_update_time = run_fROIPCA(init_size=args.init_size,
+                                              N_updates=args.N_updates,
+                                              m=args.PC_num,
+                                              seed=i,
+                                              const_u=args.const_u,
+                                              qr_every=args.qr_every,
+                                              optimizer=args.optimizer,
+                                              dataset_name=args.dataset_name,
+                                              debug=args.debug
+                                              )
+        error_list.append(error)
+        mean_update_times.append(mean_update_time)
 
-    print(f'error mean: {np.mean(error_list)}, error std: {np.std(error_list)}')
-    print('done')
+    print(f'optimizer: {args.optimizer}, const U: {args.const_u}, qr_every: {args.qr_every}, dataset: {args.dataset_name}\n'
+          f'error mean: {np.mean(error_list)}, '
+          f'error std: {np.std(error_list)}, '
+          f'update time mean: {np.mean(mean_update_times)}')
